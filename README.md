@@ -116,13 +116,15 @@ One row per input profile, in both CSV and JSONL. The important columns first:
 
 | Column | Meaning |
 |---|---|
-| `days_since_last_activity` | Days since the newest evidence of any kind. |
+| `days_since_last_activity` | Days since the newest evidence of any kind, with one decimal (`0.4` = about ten hours ago). For a reaction this is an upper bound. |
 | `last_activity_type` | `post`, `repost`, `comment` or `reaction`. |
+| `most_recent_activity_url` | Link to that newest item (for a reaction: the post they reacted to). |
 | `activity_status` | `active` (something within 30 days), `stale` (31–90 days), `inactive` (older than 90 days), `no_activity_observed` (nothing found). |
 | `activity_level` | `minimal` / `low` / `moderate` / `high`. |
 | `activity_confidence` | `low` / `medium` / `high`: how well the evidence pins down the timing. Reaction-only profiles get at most `medium`, because reactions have no exact date. |
 | `active_7d`, `active_30d`, `active_90d` | Simple yes/no flags. |
 | `recent_activity_evidence_at` | Timestamp of the newest evidence. |
+| `most_recent_exact_activity_at` | Newest post, repost or comment: the latest action with an exact date. Empty for reaction-only profiles. |
 | `most_recent_observed_authored_post_at`, `most_recent_post_url` | Their most recent **own** post (reposts excluded). Empty means none was seen in the sample, not that they never posted. |
 | `most_recent_observed_authored_comment_at`, `most_recent_comment_url` | Their most recent comment. |
 
@@ -138,9 +140,13 @@ One row per input profile, in both CSV and JSONL. The important columns first:
 
 | Column | Meaning |
 |---|---|
-| `success`, `status_code` | `true` / `200` normally; `false` / `502` if a data fetch failed. |
-| `data_quality_warning`, `error` | Set when an actor or the TypeSafe call failed. A failed fetch leaves the status **blank** rather than claiming "no activity". |
+| `success`, `status_code` | `true` / `200` normally. `502` when a data source or TypeSafe failed (`success` stays `true` if at least one source came back); `500` if something unexpected broke for this one profile. Never a crash: every profile gets a row. |
+| `data_quality_warning`, `error` | Set when a source failed, TypeSafe failed, or an item had an unusable date. `error` lists every problem. A failed fetch leaves the status **blank** rather than claiming "no activity". |
+| `samples_at_cap` | Which sources hit their fetch cap (e.g. `comments,reactions`): the person may have newer activity that was not in the sample. |
+| `rejected_evidence_count` | Items dropped because their date was missing, malformed or in the future. |
 | `status_matches_date_rule` | `false` means TypeSafe's status disagreed with the plain 30/90-day arithmetic. Rare; worth a look. |
+
+**Before exporting a list to a campaign, hold back rows where `data_quality_warning` is `true` or `status_matches_date_rule` is `false`** and look at them by hand. The run summary on stderr counts them for you.
 | `typesafe_status_confidence` | 0 to 1, how sure TypeSafe was about the status. |
 
 ---
@@ -159,16 +165,16 @@ TypeSafe never sees post text, names or URLs. It only sees **how old each piece 
     "recent_reaction_evidence_count_7d": 1, "recent_reaction_evidence_count_30d": 2, ...
   },
   "evidence": [
-    {"type": "post", "age_days": 3},
-    {"type": "comment", "age_days": 40},
-    {"type": "reaction", "age_days_at_most": 5},
-    {"type": "reaction", "age_days_at_most": 20},
-    {"type": "reaction", "age_days_at_most": 200}
+    {"type": "post", "age_days": 3.2},
+    {"type": "comment", "age_days": 40.0},
+    {"type": "reaction", "age_days_at_most": 4.9},
+    {"type": "reaction", "age_days_at_most": 20.1},
+    {"type": "reaction", "age_days_at_most": 200.6}
   ]
 }
 ```
 
-The 30/90-day flags are deliberately **left out** of what TypeSafe sees, so it has to judge the evidence rather than copy an answer.
+Ages are exact to a tenth of a day, and the 30/90-day windows are tested to the millisecond: a post from 30.9 days ago is *not* "within 30 days". The 30/90-day flags are deliberately **left out** of what TypeSafe sees, so it has to judge the evidence rather than copy an answer. If one of the three sources failed for a profile, the summary says so (`"sources_unavailable": ["comments"]`) so the confidence answer can reflect it.
 
 ### The four questions
 
@@ -220,7 +226,7 @@ Apify charges per item fetched. With the default caps of 5 posts, 5 comments and
 | TypeSafe | $0.042 per million tokens | ~$0.00002 |
 | **Total** | | **≈ $0.04, or $38 per 1,000 profiles** |
 
-Profiles with less activity cost less (you only pay for items that exist). `--dry-run` shows the maximum before you spend anything, and every Apify run carries a hard spend cap so a surprise can't run away.
+Profiles with less activity cost less (you only pay for items that exist). `--dry-run` prints two numbers: the **estimate** (what the caps above add up to) and the **hard cap** (the most Apify is authorised to charge: each actor run gets estimate + 25% + $0.05 headroom, so for one profile that is $0.20 even though the estimate is $0.04). The cap exists so a surprise can't run away; the estimate is what you should expect to pay.
 
 For comparison, LinkedPulse's equivalent check costs $0.03 per profile; this tool costs slightly more but gives you the evidence, the reason, and full control over the rules.
 
@@ -228,43 +234,43 @@ For comparison, LinkedPulse's equivalent check costs $0.03 per profile; this too
 
 ## Settings you can change (`config.toml`)
 
-Everything tunable is in one file with comments. The main knobs:
+Everything tunable is in one file with comments. The 7/30/90-day windows are fixed in code on purpose: the column names and the question wording depend on them. The main knobs:
 
 | Setting | Default | What it does |
 |---|---|---|
 | `fetch.max_posts / max_comments / max_reactions` | 5 / 5 / 10 | How many of each to fetch per profile. Higher = more evidence, more cost. |
 | `fetch.chunk_size` | 50 | Profiles per Apify run. |
-| `windows_days.recent / active / stale` | 7 / 30 / 90 | The time windows behind the flags and the status definitions. |
 | `judge.outreach_ready_threshold` | 0.4 | Probability at which `linkedin_outreach_ready` becomes `true`. Raise it to be pickier. |
 | `judge.workers` | 8 | Parallel TypeSafe calls. |
 | `[questions.*]` | see file | The exact wording of the four TypeSafe questions and their answer definitions. |
 
 ### Re-judging without paying again
 
-Every run saves the raw fetched data under `out/raw/<timestamp>/`. If you change a threshold or reword a question, re-run on that data for free:
+Every run saves the raw fetched data under `out/raw/<timestamp>/`, with a `manifest.json` recording which profiles were queried, every Apify run id and status, the time, and the config used. If you change a threshold or reword a question, re-run on that data for free:
 
 ```sh
 uv run --env-file .env activity_intel.py leads.csv --from-raw out/raw/20260922-002108
 ```
 
-Only TypeSafe is called again (a fraction of a cent). Apify is not touched.
+Only TypeSafe is called again (a fraction of a cent). Apify is not touched. A profile in your input that the cache never collected comes back as a `502` "not collected" row, not as "no activity".
 
 ---
 
 ## Things to know before trusting a big list
 
-- **Samples, not totals.** Counts are capped by the settings. "10 reactions" means the fetch cap was hit, not that the person made exactly 10.
+- **Samples, not totals.** Counts are capped by the settings. "10 reactions" means the fetch cap was hit, not that the person made exactly 10. `samples_at_cap` tells you which sources were saturated.
 - **Activity level saturates.** At the default caps, anyone reasonably active fills the whole sample inside 30 days and scores `high`. To rank active people against each other, sort by `outreach_ready_probability` instead.
 - **Probabilities wobble slightly.** The same evidence can score 0.78 one run and 0.83 the next. Treat anything between about 0.35 and 0.45 as "maybe" rather than a firm yes or no.
 - **Only public activity counts.** Reading the feed, DMs and private-mode activity are invisible. A person can be on LinkedIn daily and still show as inactive if they never post, comment or react.
 - **Comments are not returned newest-first.** With a small `max_comments`, the newest comment can be missed. Raise the cap if the exact latest comment matters to you.
-- **Validated on active profiles.** The rules were checked live on 11 real active profiles and on synthetic stale/dormant cases (all matched the date rule). No real dormant profile has been through it yet; if a result looks wrong, the raw data for it is in `out/raw/`.
+- **Validated on active profiles.** The rules were checked live on 11 real active profiles and on synthetic stale/dormant cases (all matched the date rule). No real dormant profile has been through it yet, and the 0.4 threshold has not been checked against reply outcomes: the probability is the model's judgment that LinkedIn is a live channel, not a measured reply rate. If a result looks wrong, the raw data for it is in `out/raw/`.
+- **Failures are per profile.** A failed Apify run (`FAILED`, `TIMED-OUT`, aborted by the spend cap) marks only the profiles in that run as unknown; the rest of the batch is unaffected. One malformed item is dropped and counted, never fatal.
 
 ---
 
 ## Using it with a coding agent
 
-The repo includes `AGENTS.md` (also linked as `CLAUDE.md`). Claude Code, Codex, Cursor and similar tools read it automatically. It tells the agent how to run the tool, what the output means, and the rules: always `--dry-run` first, never edit `config.toml` without asking, never print `.env`.
+The repo includes `AGENTS.md` with everything an agent needs: how to run the tool, what the output means, and the rules (always `--dry-run` first, never edit `config.toml` without asking, never print `.env`). `CLAUDE.md` is a one-line file that imports it, so Claude Code picks it up automatically (tested). Codex, Cursor, Gemini CLI and others read `AGENTS.md` by convention but have not been tested here; if yours does not, point it at the file explicitly ("read AGENTS.md and follow it").
 
 So you can say things like *"check which of the people in prospects.csv are worth reaching out to on LinkedIn"* and the agent knows what to do.
 
@@ -276,7 +282,8 @@ So you can say things like *"check which of the people in prospects.csv are wort
 activity_intel.py         the whole tool (~300 lines): load → fetch → compute → judge → explain → write
 config.toml               all tunable values and the TypeSafe question wording
 test_activity_intel.py    offline tests (uv run pytest -q) — no network, no keys needed
-AGENTS.md / CLAUDE.md     instructions for coding agents
+AGENTS.md                 instructions for coding agents (CLAUDE.md imports it)
+.github/workflows/        runs the offline tests on every push
 .env.example              template for your two keys
 example_leads.csv         a two-row sample input
 out/                      results and raw data (git-ignored)
@@ -301,8 +308,11 @@ If you want to reimplement this in another language or stack, the pieces are:
 | `APIFY_TOKEN not set` / `TYPESAFE_API_KEY not set` | Key missing from `.env`, or you forgot `--env-file .env` | Add the key; run with `uv run --env-file .env ...` |
 | `ForbiddenError: Too many outstanding invoices` | Your Apify account has unpaid invoices | Settle them in Apify Console → Billing. Nothing was charged. |
 | `no LinkedIn /in/ URLs found in input` | Input has no personal profile URLs, or the CSV column isn't named `linkedin_url` | Check the file |
-| `[attribute] N items matched no input profile` | HarvestAPI changed its output format | Inspect `out/raw/<run>/*.json` and open an issue |
-| Row has `status_code: 502` | One of the three actors failed for that run | Re-run; the row's verdict is blank rather than wrong |
+| `[attribute] N items matched no input profile` | With `--from-raw`: the cache holds profiles you did not list this time (normal). On a live run: HarvestAPI changed its output format | Live run: inspect `out/raw/<run>/*.json` and open an issue |
+| `[fetch] posts failed for N profiles: run … FAILED` | That Apify run ended without `SUCCEEDED` (actor error, timeout, or the spend cap stopped it) | Those profiles get `502`; re-run just them. Run id and status are in `out/raw/<run>/manifest.json` |
+| `[from-raw] no manifest.json` | Cache made by an older version | Still works, but profiles missing from the cache look like "no activity"; re-fetch to get a manifest |
+| Row has `status_code: 502` | A data source or TypeSafe failed for that profile (`error` says which) | Re-run; the row's verdict is blank rather than wrong |
+| Row has `status_code: 500` | Unexpected error for that one profile (`error` has the exception) | Open an issue with the row and its raw items |
 
 ---
 
