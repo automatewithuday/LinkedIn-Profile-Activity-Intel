@@ -1,0 +1,13 @@
+[project]
+name = "activity-intel"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "apify-client>=3.2.0",
+    "typesafe-sdk>=0.7.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
