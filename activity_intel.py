@@ -122,7 +122,8 @@ def build_evidence(posts, comments, reactions, now, windows=WINDOWS, caps=None):
         stamped = [(_ts(k, it, now_ms), it) for it in items]
         rejected += sum(t is None for t, _ in stamped)
         dated[k] = sorted((p for p in stamped if p[0] is not None), key=lambda p: -p[0])
-    age = lambda ms: round(max(0.0, (now_ms - ms) / DAY_MS), 1)
+    age = lambda ms: max(0.0, (now_ms - ms) / DAY_MS)  # unrounded for TypeSafe; display rounding happens below
+    shown = lambda ms, up: (math.ceil(age(ms) * 10) if up else round(age(ms) * 10)) / 10  # bounds round up, never down
     within = lambda ms, days: ms is not None and now_ms - ms <= days * DAY_MS  # exact, no day rounding
     latest = {k: (v[0][0] if v else None) for k, v in dated.items()}
     newest = max((t for t in latest.values() if t), default=None)
@@ -131,7 +132,7 @@ def build_evidence(posts, comments, reactions, now, windows=WINDOWS, caps=None):
     r7, r30, r90 = windows["recent"], windows["active"], windows["stale"]
 
     facts = {
-        "days_since_last_activity": age(newest) if newest else None,  # for reactions: at most this many days
+        "days_since_last_activity": shown(newest, newest_kind == "reactions") if newest else None,  # reaction: upper bound
         "last_activity_type": newest_kind[:-1] if newest_kind else None,
         "most_recent_activity_url": _url(newest_kind, dated[newest_kind][0][1]) if newest_kind else None,
         "samples_at_cap": ",".join(k for k in ACTORS if caps and fetched[k] >= caps[k]),
@@ -186,7 +187,8 @@ def chunks(urls, cfg):
 
 def fetch(client, urls, cfg, raw_dir, now):
     """Run the 3 actors per chunk of profiles. Returns ({kind: [items]}, runs).
-    runs = [{kind, profiles, run_id, status, usage_usd, error}] — one per actor run; error set = those profiles lack that source."""
+    runs = [{kind, profiles, run_id, status, charged_events, usage_usd, charges_final, error, ...}] — one per actor run;
+    error set = those profiles lack that source. Charge fields are observed at run end and lag; charges_final is always False."""
     f = cfg["fetch"]
     items, runs = {k: [] for k in ACTORS}, []
 
@@ -198,26 +200,36 @@ def fetch(client, urls, cfg, raw_dir, now):
         if r.status != "SUCCEEDED":  # call() returns FAILED / TIMED-OUT / ABORTED runs too, with empty or partial datasets
             return [{"kind": kind, "profiles": chunk, "run_id": r.id, "status": r.status,
                      "error": f"run {r.id} {r.status}: {r.status_message}"}], []
+        items = client.dataset(r.default_dataset_id).list_items().items  # the scrape itself; everything below is best-effort
+        entry = {"kind": kind, "profiles": chunk, "run_id": r.id, "status": r.status, "error": None,
+                 "charges_final": False, "charges_observed_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        try:  # charge counters lag the run end (often by minutes): recorded as observed, never final; Console has the truth
+            final = client.run(r.id).get()
+            entry |= {"charged_events": final.charged_event_counts, "usage_usd": final.usage_total_usd}
+        except Exception as e:
+            entry |= {"charged_events": None, "usage_usd": None, "charges_error": f"{type(e).__name__}: {e}"}
         # A SUCCEEDED run can still silently skip profiles (live: upstream "Too many queued requests (code_22)" gave 0 posts
         # for 3-4 of 10 profiles). The only trace is the actor log, so scan it per profile.
         # ponytail: HarvestAPI log-format heuristic; replace if the actor ever reports per-profile errors in the dataset.
-        log = client.run(r.id).log().get() or ""
+        try:
+            log = client.run(r.id).log().get() or ""
+        except Exception as e:
+            log, entry["log_error"] = "", f"{type(e).__name__}: {e}"
         skipped = {u: msg for target, msg in re.findall(r'Error scraping item#\d+ (\{.*?\}): "?(.*?)"?$', log, re.M)
                    if (u := username(target))}
-        final = client.run(r.id).get()  # charge counters lag the run end (often by minutes); recorded as read, Console has the final
-        entries = [{"kind": kind, "profiles": chunk, "run_id": r.id, "status": r.status,
-                    "charged_events": final.charged_event_counts, "usage_usd": final.usage_total_usd, "error": None}]
-        items = client.dataset(r.default_dataset_id).list_items().items
-        if skipped:
-            urls_ = [p for p in chunk if username(p) in skipped]
-            items = [it for it in items if username(json.dumps(it.get("query"))) not in skipped]  # keep only complete profiles
-            if retry:  # skipped profiles returned nothing, so were not charged: one retry costs what the first try should have
-                print(f"[fetch] {kind}: actor skipped {len(urls_)} profiles, retrying once", file=sys.stderr)
+        if not skipped:
+            return [entry], items
+        urls_ = [p for p in chunk if username(p) in skipped]
+        items = [it for it in items if username(json.dumps(it.get("query"))) not in skipped]  # keep only complete profiles
+        why = f"actor errors for {len(urls_)} profiles: {'; '.join(sorted(set(skipped.values())))}"
+        if retry:  # skipped profiles returned nothing, so were not charged: one retry costs what the first try should have
+            print(f"[fetch] {kind}: actor skipped {len(urls_)} profiles, retrying once", file=sys.stderr)
+            try:
                 more_entries, more_items = run(kind, urls_, retry=False)
-                return entries + more_entries, items + more_items
-            entries.append({"kind": kind, "profiles": urls_, "run_id": r.id, "status": r.status,
-                            "error": f"actor errors for {len(urls_)} profiles: {'; '.join(sorted(set(skipped.values())))}"})
-        return entries, items
+                return [entry] + more_entries, items + more_items
+            except Exception as e:  # a failed retry must not undo the first run's results
+                why = f"{why}; retry failed: {type(e).__name__}: {e}"
+        return [entry, {"kind": kind, "profiles": urls_, "run_id": r.id, "status": r.status, "error": why}], items
 
     with ThreadPoolExecutor(3) as ex:
         for chunk in chunks(urls, cfg):

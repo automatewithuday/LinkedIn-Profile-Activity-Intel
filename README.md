@@ -174,7 +174,7 @@ TypeSafe never sees post text, names or URLs. It only sees **how old each piece 
 }
 ```
 
-Ages are exact to a tenth of a day, and the 30/90-day windows are tested to the millisecond: a post from 30.9 days ago is *not* "within 30 days". The 30/90-day flags are deliberately **left out** of what TypeSafe sees, so it has to judge the evidence rather than copy an answer. If one of the three sources failed for a profile, the summary says so (`"sources_unavailable": ["comments"]`) so the confidence answer can reflect it.
+Ages are sent unrounded (a post from 30.04 days ago arrives as `30.04`, not `30`), and the 30/90-day windows are tested to the millisecond: that post is *not* "within 30 days". In the output, `days_since_last_activity` is shown to one decimal, rounded **up** for reactions because it is an upper bound. The 30/90-day flags are deliberately **left out** of what TypeSafe sees, so it has to judge the evidence rather than copy an answer. If one of the three sources failed for a profile, the summary says so (`"sources_unavailable": ["comments"]`) so the confidence answer can reflect it.
 
 ### The four questions
 
@@ -246,7 +246,7 @@ Everything tunable is in one file with comments. The 7/30/90-day windows are fix
 
 ### Re-judging without paying again
 
-Every run saves the raw fetched data under `out/raw/<timestamp>/`, with a `manifest.json` recording which profiles were queried, every Apify run id and status, the time, and the config used. If you change a threshold or reword a question, re-run on that data for free:
+Every run saves the raw fetched data under `out/raw/<timestamp>/`, with a `manifest.json` recording which profiles were queried, every Apify run id and status, the time, and the config used. It also records the charge counters Apify reported at run end, but those lag by minutes and often read 0, so each entry says `charges_final: false`; check the Apify Console for the real bill. If you change a threshold or reword a question, re-run on that data for free:
 
 ```sh
 uv run --env-file .env activity_intel.py leads.csv --from-raw out/raw/20260922-002108

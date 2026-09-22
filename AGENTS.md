@@ -35,7 +35,7 @@ Options: `--limit N`, `--config path`, `--out dir`.
 |---|---|---|
 | `linkedin_outreach_ready`, `outreach_ready_probability` | TypeSafe | THE verdict: is this profile worth reaching out to on LinkedIn now. Probability ≥ `judge.outreach_ready_threshold`; sort by probability to prioritise |
 | `outreach_reason` | code | plain-English reasoning assembled from the facts + Jev's answers (TypeSafe cannot write text; no LLM involved) |
-| `days_since_last_activity`, `last_activity_type`, `most_recent_activity_url` | code | newest evidence of any kind (age in days, 1 decimal); for `reaction` the age is an upper bound and the URL is the post reacted to |
+| `days_since_last_activity`, `last_activity_type`, `most_recent_activity_url` | code | newest evidence of any kind (days, 1 decimal; rounded UP for reactions since it is an upper bound); the URL for a `reaction` is the post reacted to. TypeSafe receives the unrounded ages |
 | `activity_status` | TypeSafe | `active` (≤30d) / `stale` (31–90d) / `inactive` (>90d); `no_activity_observed` set by code when no evidence; null if fetch failed |
 | `activity_level` | TypeSafe | `minimal` / `low` / `moderate` / `high` (`none` when no evidence) |
 | `activity_confidence` | TypeSafe | `low` / `medium` / `high` — how well the evidence supports the timing; code caps it at `medium` when no exactly-dated evidence exists |
@@ -66,17 +66,20 @@ A reaction on an old post proves nothing recent and is never counted as recent.
 
 - Apify `call()` returns FAILED / TIMED-OUT / ABORTED runs as normal objects with an empty or partial dataset; `fetch()` treats
   anything but `SUCCEEDED` as a failure for that run's profiles. Run ids, statuses and charge counters are in
-  `out/raw/<run>/manifest.json` with the queried profiles, timestamp and config. Counters are read at run end and lag
-  (often show 0); the Apify Console has the final charge.
+  `out/raw/<run>/manifest.json` with the queried profiles, timestamp and config. Charge fields (`charged_events`, `usage_usd`)
+  are observed at run end and lag, often showing 0: every entry carries `charges_final: false` and `charges_observed_at`,
+  so never read them as a final bill; the Apify Console has it. Charge/log lookups are best-effort (`charges_error` /
+  `log_error` when they fail) and never affect the scraped data.
 - A `SUCCEEDED` HarvestAPI run can still skip profiles: live, the posts actor logged `Error scraping item#N {...}: "Too many
   queued requests (code_22)"` for 3-4 of 10 profiles and returned 0 posts for them. `fetch()` scans the run log for that
-  line, drops the affected profiles' partial items, retries them once in a separate run, and on a second failure marks
-  them 502 for that source. This is a log-format heuristic; if unmatched-but-empty profiles appear, check the run log.
+  line, drops the affected profiles' partial items, retries them once in a separate run, and on a second failure (or a
+  retry exception) marks only them 502 for that source; the first run's results and run id are kept. This is a log-format
+  heuristic; if unmatched-but-empty profiles appear, check the run log.
 - `attribute()` treats the `query` echo as authoritative: an item whose query owner is not in the current input is unmatched,
   never reassigned via `author`/`repostedBy`. With `--from-raw` on a subset of the cached profiles, unmatched counts are expected.
 
 If stderr reports unmatched items on a LIVE run, inspect `out/raw/<run>/*.json`.
 
 ## Tests
-`uv run pytest -q` — 19 offline tests (no network): evidence rules, window edges, replay ownership, failed runs, malformed
+`uv run pytest -q` — 21 offline tests (no network): evidence rules, window edges, replay ownership, failed runs, malformed
 timestamps, per-chunk error isolation, TypeSafe failure, cost/cap agreement, confidence ceiling. CI runs them on every push.

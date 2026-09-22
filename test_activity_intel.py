@@ -229,13 +229,18 @@ def test_from_raw_flags_profiles_the_cache_never_collected(tmp_path):
 
 def test_fractional_ages_and_future_timestamps():
     facts, ev = build_evidence([post(30.9)], [], [], NOW, WIN)
-    assert facts["date_rule_status"] == "stale" and facts["active_30d"] is False and ev[0]["age_days"] == 30.9
+    assert facts["date_rule_status"] == "stale" and facts["active_30d"] is False and abs(ev[0]["age_days"] - 30.9) < 1e-6
     assert build_evidence([post(90.9)], [], [], NOW, WIN)[0]["date_rule_status"] == "inactive"
     facts, ev = build_evidence([], [], [reaction(3.9)], NOW, WIN)
-    assert ev[0]["age_days_at_most"] == 3.9 and facts["active_7d"]
+    assert abs(ev[0]["age_days_at_most"] - 3.9) < 1e-6 and facts["active_7d"]
     row = dict.fromkeys(FIELDS) | facts | {"linkedin_outreach_ready": True, "outreach_ready_probability": 0.8,
                                            "activity_status": "active", "activity_level": "low", "activity_confidence": "low"}
     assert "at most 4d old" in explain(row, NOW)
+    # the reviewer's cases: a 3.04d bound must not be shown as 3.0; a 30.04d post must reach Jev as > 30, not 30.0
+    facts, ev = build_evidence([], [], [reaction(3.04)], NOW, WIN)
+    assert facts["days_since_last_activity"] == 3.1 and ev[0]["age_days_at_most"] > 3.0
+    facts, ev = build_evidence([post(30.04)], [], [], NOW, WIN)
+    assert facts["days_since_last_activity"] == 30.0 and ev[0]["age_days"] > 30 and facts["date_rule_status"] == "stale"
     facts, _ = build_evidence([post(-2)], [], [reaction(0.2)], NOW, WIN)  # post dated 2 days in the future
     assert facts["rejected_evidence_count"] == 1 and facts["post_evidence_count"] == 0 and facts["last_activity_type"] == "reaction"
     assert "today" in explain(dict.fromkeys(FIELDS) | facts | {"linkedin_outreach_ready": True, "outreach_ready_probability": 0.8,
@@ -288,3 +293,34 @@ def test_succeeded_run_that_skipped_profiles_in_its_log_marks_them_failed(tmp_pa
     assert analyze(jane, {"posts": {"jane": items["posts"]}, "comments": {}, "reactions": {}}, runs, NOW, CFG, FakeTS(), None)["status_code"] == 200
     b = analyze(bob, EMPTY, runs, NOW, CFG, None, None)
     assert b["status_code"] == 502 and b["activity_status"] is None and "posts: actor errors" in b["error"]
+
+
+def test_retry_or_metadata_failure_never_discards_the_first_runs_results(tmp_path):
+    jane, bob = "https://www.linkedin.com/in/jane", "https://www.linkedin.com/in/bob"
+    log = '2026-09-22T03:19:26.062Z Error scraping item#1 {"targetUrl":"https://www.linkedin.com/in/bob"}: "Too many queued requests (code_22)"\n'
+    janes = [post(1) | {"query": {"targetUrl": jane}}]
+
+    class Flaky(FakeApify):  # first posts call succeeds, the retry raises
+        def actor(self, name):
+            inner = super().actor(name)
+            def call(**kw):
+                if kw["run_input"].get("targetUrls") == [bob]:
+                    raise TimeoutError("retry timed out")
+                return inner.call(**kw)
+            return NS(call=call)
+
+    client = Flaky({"posts": ("SUCCEEDED", janes), "comments": ("SUCCEEDED", []), "reactions": ("SUCCEEDED", [])}, logs={"posts": log})
+    items, runs = fetch(client, [jane, bob], CFG, tmp_path / "a", NOW)
+    assert items["posts"] == janes and [r["run_id"] for r in runs if r["kind"] == "posts"] == ["run-posts", "run-posts"]
+    err = [r for r in runs if r["error"]]
+    assert len(err) == 1 and err[0]["profiles"] == [bob] and "retry failed: TimeoutError" in err[0]["error"]
+
+    class NoMeta(FakeApify):  # run record and log lookups fail; the scrape itself is fine
+        def run(self, id_):
+            raise TimeoutError("meta")
+
+    client = NoMeta({"posts": ("SUCCEEDED", janes), "comments": ("SUCCEEDED", []), "reactions": ("SUCCEEDED", [])})
+    items, runs = fetch(client, [jane], CFG, tmp_path / "b", NOW)
+    assert items["posts"] == janes and all(r["error"] is None for r in runs)
+    assert runs[0]["charges_final"] is False and runs[0]["charged_events"] is None and "TimeoutError" in runs[0]["charges_error"]
+    assert "TimeoutError" in runs[0]["log_error"] and runs[0]["charges_observed_at"]
