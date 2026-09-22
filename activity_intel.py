@@ -5,6 +5,7 @@ uv run --env-file .env activity_intel.py leads.csv [--dry-run] [--limit N] [--fr
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import sys
@@ -20,14 +21,19 @@ ACTORS = {
     "comments": "harvestapi/linkedin-profile-comments",
     "reactions": "harvestapi/linkedin-profile-reactions",
 }
+# Fixed on purpose: output field names (active_30d, ..._count_30d) and the TypeSafe question text in
+# config.toml all say 30/90 days. Making these configurable would let code and model silently disagree.
+WINDOWS = {"recent": 7, "active": 30, "stale": 90}
+DAY_MS = 86_400_000
 FIELDS = [
     "success", "status_code", "linkedin_url", "username",
     "linkedin_outreach_ready", "outreach_ready_probability", "outreach_reason",
     "activity_status", "activity_level", "activity_confidence",
-    "days_since_last_activity", "last_activity_type",
-    "data_quality_warning", "active_7d", "active_30d", "active_90d",
-    "recent_activity_evidence_at", "most_recent_observed_authored_post_at",
-    "most_recent_observed_authored_comment_at",
+    "days_since_last_activity", "last_activity_type", "most_recent_activity_url",
+    "data_quality_warning", "samples_at_cap", "rejected_evidence_count",
+    "active_7d", "active_30d", "active_90d",
+    "recent_activity_evidence_at", "most_recent_exact_activity_at",
+    "most_recent_observed_authored_post_at", "most_recent_observed_authored_comment_at",
     "post_evidence_count", "repost_evidence_count", "comment_evidence_count", "reaction_evidence_count",
     "recent_post_evidence_count_30d", "recent_repost_evidence_count_30d", "recent_comment_evidence_count_30d",
     "recent_reaction_evidence_count_7d", "recent_reaction_evidence_count_30d",
@@ -63,13 +69,14 @@ def attribute(kind, items, usernames):
     out = {u: [] for u in usernames}
     missed = 0
     for it in items:
-        # `query` (the actor's echo of its input) is what matches on live data; the rest are fallbacks.
-        cands = [
-            username(json.dumps(it.get("query"))) if it.get("query") else None,
-            username((it.get("actor") or {}).get("linkedinUrl")) if kind != "posts" else None,
-            ((it.get("repostedBy") or {}).get("publicIdentifier") or "").lower() or None,
-            ((it.get("author") or {}).get("publicIdentifier") or "").lower() or None if kind == "posts" else None,
-        ]
+        if it.get("query"):  # the actor's echo of its input names the owner; never hand their item to someone else
+            cands = [username(json.dumps(it["query"]))]
+        else:  # fallbacks for items without a query echo
+            cands = [
+                username((it.get("actor") or {}).get("linkedinUrl")) if kind != "posts" else None,
+                ((it.get("repostedBy") or {}).get("publicIdentifier") or "").lower() or None,
+                ((it.get("author") or {}).get("publicIdentifier") or "").lower() or None if kind == "posts" else None,
+            ]
         owner = next((c for c in cands if c in out), None)
         if owner:
             out[owner].append(it)
@@ -78,38 +85,57 @@ def attribute(kind, items, usernames):
     return out, missed
 
 
-def _ts(kind, it):
-    """Evidence timestamp in ms. For reactions this is the post's date: a lower bound on when the reaction happened.
+def _ts(kind, it, now_ms=math.inf):
+    """Evidence timestamp in ms, or None when missing, malformed or in the future (>1h: clock-skew tolerance).
+    For reactions this is the post's date: a lower bound on when the reaction happened.
     (Reaction items do carry createdAt, but live data shows it is a millisecond-exact copy of post.postedAt.)"""
-    if kind == "comments":
-        t = it.get("createdAtTimestamp")
-        if t is None and it.get("createdAt"):
-            t = datetime.fromisoformat(str(it["createdAt"]).replace("Z", "+00:00")).timestamp() * 1000
-        return t
-    src = it.get("post") or {} if kind == "reactions" else it
-    return (src.get("postedAt") or {}).get("timestamp")
+    try:
+        if kind == "comments":
+            t = it.get("createdAtTimestamp")
+            if t is None and it.get("createdAt"):
+                t = datetime.fromisoformat(str(it["createdAt"]).replace("Z", "+00:00")).timestamp() * 1000
+        else:
+            src = it.get("post") or {} if kind == "reactions" else it
+            t = (src.get("postedAt") or {}).get("timestamp")
+        t = float(t)
+    except (TypeError, ValueError):
+        return None
+    return t if t <= now_ms + 3_600_000 else None
+
+
+def _url(kind, it):
+    return (it.get("post") or {}).get("linkedinUrl") if kind == "reactions" else it.get("linkedinUrl")
 
 
 def _iso(ms):
     return datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat(timespec="seconds") if ms else None
 
 
-def build_evidence(posts, comments, reactions, now, windows):
-    """-> (facts dict with LinkedPulse-style fields, evidence list for TypeSafe)."""
+def build_evidence(posts, comments, reactions, now, windows=WINDOWS, caps=None):
+    """-> (facts dict with LinkedPulse-style fields, evidence list for TypeSafe). caps = {kind: max items fetched}."""
     now_ms = now.timestamp() * 1000
+    fetched = {"posts": len(posts), "comments": len(comments), "reactions": len(reactions)}
     # a repost is the person's own action (live data: postedAt == repostedAt) but not an authored post
     posts, reposts = [p for p in posts if not p.get("repostedBy")], [p for p in posts if p.get("repostedBy")]
-    dated = {k: sorted(((_ts(k, it), it) for it in items if _ts(k, it)), key=lambda p: -p[0])
-             for k, items in (("posts", posts), ("reposts", reposts), ("comments", comments), ("reactions", reactions))}
-    age = lambda ms: max(0, int((now_ms - ms) // 86_400_000))
-    within = lambda ms, days: ms is not None and age(ms) <= days
+    dated, rejected = {}, 0
+    for k, items in (("posts", posts), ("reposts", reposts), ("comments", comments), ("reactions", reactions)):
+        stamped = [(_ts(k, it, now_ms), it) for it in items]
+        rejected += sum(t is None for t, _ in stamped)
+        dated[k] = sorted((p for p in stamped if p[0] is not None), key=lambda p: -p[0])
+    age = lambda ms: round(max(0.0, (now_ms - ms) / DAY_MS), 1)
+    within = lambda ms, days: ms is not None and now_ms - ms <= days * DAY_MS  # exact, no day rounding
     latest = {k: (v[0][0] if v else None) for k, v in dated.items()}
     newest = max((t for t in latest.values() if t), default=None)
+    newest_kind = next((k for k in dated if newest and latest[k] == newest), None)
+    exact = max((latest[k] for k in ("posts", "reposts", "comments") if latest[k]), default=None)
     r7, r30, r90 = windows["recent"], windows["active"], windows["stale"]
 
     facts = {
         "days_since_last_activity": age(newest) if newest else None,  # for reactions: at most this many days
-        "last_activity_type": next((k[:-1] for k in ("posts", "reposts", "comments", "reactions") if newest and latest[k] == newest), None),
+        "last_activity_type": newest_kind[:-1] if newest_kind else None,
+        "most_recent_activity_url": _url(newest_kind, dated[newest_kind][0][1]) if newest_kind else None,
+        "samples_at_cap": ",".join(k for k in ACTORS if caps and fetched[k] >= caps[k]),
+        "rejected_evidence_count": rejected,
         "recent_post_evidence_count_30d": sum(within(t, r30) for t, _ in dated["posts"]),
         "recent_repost_evidence_count_30d": sum(within(t, r30) for t, _ in dated["reposts"]),
         "recent_comment_evidence_count_30d": sum(within(t, r30) for t, _ in dated["comments"]),
@@ -117,6 +143,7 @@ def build_evidence(posts, comments, reactions, now, windows):
         "active_30d": within(newest, r30),
         "active_90d": within(newest, r90),
         "recent_activity_evidence_at": _iso(newest),
+        "most_recent_exact_activity_at": _iso(exact),  # newest post/repost/comment: exactly dated, unlike reactions
         "most_recent_observed_authored_post_at": _iso(latest["posts"]),
         "most_recent_observed_authored_comment_at": _iso(latest["comments"]),
         "post_evidence_count": len(dated["posts"]),
@@ -147,34 +174,67 @@ def estimate_cost(n, cfg):
     return {k: n * v / 1000 for k, v in per.items()}
 
 
-def fetch(client, urls, cfg, raw_dir):
-    """Run the 3 actors per chunk of profiles. Returns ({kind: [items]}, {kind: error str})."""
+def run_cap(n, kind, cfg):
+    """Hard max_total_charge_usd for one actor run over n profiles: estimate + 25% + $0.05 headroom."""
+    return Decimal(str(round(estimate_cost(n, cfg)[kind] * 1.25 + 0.05, 2)))
+
+
+def chunks(urls, cfg):
+    cs = cfg["fetch"]["chunk_size"]
+    return [urls[i:i + cs] for i in range(0, len(urls), cs)]
+
+
+def fetch(client, urls, cfg, raw_dir, now):
+    """Run the 3 actors per chunk of profiles. Returns ({kind: [items]}, runs).
+    runs = [{kind, profiles, run_id, status, usage_usd, error}] — one per actor run; error set = those profiles lack that source."""
     f = cfg["fetch"]
-    items, errors = {k: [] for k in ACTORS}, {}
+    items, runs = {k: [] for k in ACTORS}, []
 
     def run(kind, chunk):
         inp = ({"targetUrls": chunk, "maxPosts": f["max_posts"], "includeReposts": f["include_reposts"],
                 "includeQuotePosts": f["include_quote_posts"]} if kind == "posts"
                else {"profiles": chunk, "maxItems": f[f"max_{kind}"]})
-        cap = Decimal(str(round(estimate_cost(len(chunk), cfg)[kind] * 1.25 + 0.05, 2)))  # hard spend cap per run
-        r = client.actor(ACTORS[kind]).call(run_input=inp, max_total_charge_usd=cap, logger=None)
-        return client.dataset(r.default_dataset_id).list_items().items
+        r = client.actor(ACTORS[kind]).call(run_input=inp, max_total_charge_usd=run_cap(len(chunk), kind, cfg), logger=None)
+        entry = {"kind": kind, "profiles": chunk, "run_id": r.id, "status": r.status,
+                 "usage_usd": float(r.usage_total_usd) if r.usage_total_usd is not None else None, "error": None}
+        if r.status != "SUCCEEDED":  # call() returns FAILED / TIMED-OUT / ABORTED runs too, with empty or partial datasets
+            return entry | {"error": f"run {r.id} {r.status}: {r.status_message}"}, []
+        return entry, client.dataset(r.default_dataset_id).list_items().items
 
-    chunks = [urls[i:i + f["chunk_size"]] for i in range(0, len(urls), f["chunk_size"])]
     with ThreadPoolExecutor(3) as ex:
-        for chunk in chunks:
+        for chunk in chunks(urls, cfg):
             futs = {k: ex.submit(run, k, chunk) for k in ACTORS}
             for k, fut in futs.items():
                 try:
-                    items[k] += fut.result()
+                    entry, got = fut.result()
                 except Exception as e:  # one actor failing must not lose the other two
-                    errors[k] = f"{type(e).__name__}: {e}"
-                    print(f"[fetch] {k} failed: {errors[k]}", file=sys.stderr)
+                    entry, got = {"kind": k, "profiles": chunk, "error": f"{type(e).__name__}: {e}"}, []
+                runs.append(entry)
+                items[k] += got
+                if entry["error"]:
+                    print(f"[fetch] {k} failed for {len(chunk)} profiles: {entry['error']}", file=sys.stderr)
     raw_dir.mkdir(parents=True, exist_ok=True)
     for k, v in items.items():
         (raw_dir / f"{k}.json").write_text(json.dumps(v, default=str))
-    (raw_dir / "errors.json").write_text(json.dumps(errors))
-    return items, errors
+    manifest = {"profiles": urls, "collected_at": now.isoformat(timespec="seconds"), "config": cfg, "runs": runs}
+    (raw_dir / "manifest.json").write_text(json.dumps(manifest, indent=1, default=str))
+    return items, runs
+
+
+def load_raw(raw, urls):
+    """Cached actor output for --from-raw. Profiles missing from the cache's manifest come back as failed runs."""
+    items = {k: json.loads((raw / f"{k}.json").read_text()) for k in ACTORS}
+    if (raw / "manifest.json").exists():
+        m = json.loads((raw / "manifest.json").read_text())
+        collected = set(map(username, m["profiles"]))
+        missing = [u for u in urls if username(u) not in collected]
+        runs = m["runs"] + [{"kind": k, "profiles": missing, "error": "not collected in this raw cache"}
+                            for k in ACTORS if missing]
+    else:  # cache from before manifests existed: coverage cannot be checked
+        print("[from-raw] no manifest.json: cannot verify which profiles this cache covers", file=sys.stderr)
+        old = json.loads((raw / "errors.json").read_text()) if (raw / "errors.json").exists() else {}
+        runs = [{"kind": k, "profiles": urls, "error": e} for k, e in old.items()]
+    return items, runs
 
 
 # ---------- judge (TypeSafe) ----------
@@ -192,16 +252,18 @@ def build_questions(cfg):
     return qs
 
 
-def judge(ts, questions, facts, evidence, cfg):
+def judge(ts, questions, facts, evidence, cfg, sources_unavailable=()):
     # counts only: the date-rule status and active_* flags would hand Jev the answer
-    summary = {k: v for k, v in facts.items() if "_count" in k}
+    summary = {k: v for k, v in facts.items() if "_count" in k and k != "rejected_evidence_count"}
+    if sources_unavailable:
+        summary["sources_unavailable"] = list(sources_unavailable)
     r = ts.system_one(state={"summary": summary, "evidence": evidence}, questions=questions,
                       model=cfg["judge"]["model"])
     def label(qid):  # score is a float position on the levels; nearest level's label
         labels = cfg["questions"][qid]["labels"]
         return labels[min(len(labels) - 1, max(0, round(r.scores[qid].score)))]
 
-    p =r.nouls["linkedin_outreach_ready"].noul
+    p = r.nouls["linkedin_outreach_ready"].noul
     status = r.choices["activity_status"]
     return {
         "activity_status": status.choice,
@@ -221,8 +283,8 @@ def explain(row, now):
     n, kind = row["days_since_last_activity"], row["last_activity_type"]
     if n is None:
         return "No public posts, comments or reactions were observed, so there is no sign this person uses LinkedIn."
-    when = "today" if n == 0 else f"{n}d ago"
-    last = (f"a reaction on a post from {when} (so the reaction is at most {max(n, 1)}d old)" if kind == "reaction"
+    when = "today" if n < 1 else f"{n:.0f}d ago"
+    last = (f"a reaction on a post from {when} (so the reaction is at most {math.ceil(n) or 1}d old)" if kind == "reaction"
             else f"a {kind} {when}")
     posts, reposts, comments, reacts = (row["recent_post_evidence_count_30d"], row["recent_repost_evidence_count_30d"],
                                         row["recent_comment_evidence_count_30d"], row["recent_reaction_evidence_count_30d"])
@@ -241,26 +303,40 @@ def explain(row, now):
     return " ".join(parts)
 
 
-def analyze(url, grouped, errors, now, cfg, ts, questions):
+def analyze(url, grouped, runs, now, cfg, ts, questions):
     u = username(url)
-    facts, evidence = build_evidence(*(grouped[k].get(u, []) for k in ACTORS), now, cfg["windows_days"])
     row = dict.fromkeys(FIELDS) | {"linkedin_url": url, "username": u, "analyzed_at": now.isoformat(timespec="seconds"),
-                                   "success": len(errors) < len(ACTORS), "status_code": 502 if errors else 200,
-                                   "data_quality_warning": bool(errors)}
+                                   "success": True, "status_code": 200, "data_quality_warning": False}
+    try:
+        return _analyze(row, u, grouped, runs, now, cfg, ts, questions)
+    except Exception as e:  # one bad profile must never abort the batch
+        return row | {"success": False, "status_code": 500, "data_quality_warning": True,
+                      "error": f"{type(e).__name__}: {e}"}
+
+
+def _analyze(row, u, grouped, runs, now, cfg, ts, questions):
+    failed = {r["kind"]: r["error"] for r in runs if r.get("error") and u in map(username, r["profiles"])}
+    caps = {k: cfg["fetch"][f"max_{k}"] for k in ACTORS}
+    facts, evidence = build_evidence(*(grouped[k].get(u, []) for k in ACTORS), now, caps=caps)
     row |= {k: v for k, v in facts.items() if k in FIELDS}
-    if errors:
-        row["error"] = "; ".join(f"{k}: {v}" for k, v in errors.items())
-    if not evidence and errors:  # a failed fetch is "unknown", not "no activity"
+    row["data_quality_warning"] = bool(failed) or facts["rejected_evidence_count"] > 0
+    if failed:
+        row |= {"success": len(failed) < len(ACTORS), "status_code": 502,
+                "error": "; ".join(f"{k}: {v}" for k, v in failed.items())}
+    if not evidence and failed:  # a failed fetch is "unknown", not "no activity"
         return row
     if not evidence:  # nothing to judge
         row |= {"activity_status": "no_activity_observed", "activity_level": "none",
                 "activity_confidence": "low", "linkedin_outreach_ready": False}
         return row | {"outreach_reason": explain(row, now)}
     try:
-        row |= judge(ts, questions, facts, evidence, cfg)
-        return row | {"outreach_reason": explain(row, now)}
+        row |= judge(ts, questions, facts, evidence, cfg, sources_unavailable=sorted(failed))
     except Exception as e:
-        return row | {"data_quality_warning": True, "error": f"typesafe: {type(e).__name__}: {e}"}
+        return row | {"success": False, "status_code": 502, "data_quality_warning": True,
+                      "error": "; ".join(filter(None, [row["error"], f"typesafe: {type(e).__name__}: {e}"]))}
+    if facts["most_recent_exact_activity_at"] is None and row["activity_confidence"] == "high":
+        row["activity_confidence"] = "medium"  # reaction-only evidence has no exact dates: documented ceiling
+    return row | {"outreach_reason": explain(row, now)}
 
 
 def main():
@@ -269,7 +345,7 @@ def main():
     ap.add_argument("--config", default="config.toml")
     ap.add_argument("--out", default="out")
     ap.add_argument("--limit", type=int)
-    ap.add_argument("--dry-run", action="store_true", help="print profile count + max Apify cost, then exit")
+    ap.add_argument("--dry-run", action="store_true", help="print profile count + Apify cost estimate and hard cap, then exit")
     ap.add_argument("--from-raw", help="re-judge cached actor output from out/raw/<run> without calling Apify")
     a = ap.parse_args()
 
@@ -277,10 +353,12 @@ def main():
     urls = load_urls(a.input)[:a.limit]
     if not urls:
         sys.exit("no LinkedIn /in/ URLs found in input")
-    est = estimate_cost(len(urls), cfg)
     if not a.from_raw:
-        print(f"{len(urls)} profiles | max Apify cost ${sum(est.values()):.2f} "
-              f"({', '.join(f'{k} ${v:.2f}' for k, v in est.items())})", file=sys.stderr)
+        est = estimate_cost(len(urls), cfg)
+        cap = sum(run_cap(len(c), k, cfg) for c in chunks(urls, cfg) for k in ACTORS)
+        print(f"{len(urls)} profiles | est. Apify ${sum(est.values()):.2f} "
+              f"({', '.join(f'{k} ${v:.2f}' for k, v in est.items())}) | hard cap ${cap:.2f} (sum of per-run spend caps)",
+              file=sys.stderr)
     if a.dry_run:
         return
     if not os.environ.get("TYPESAFE_API_KEY"):
@@ -290,15 +368,13 @@ def main():
     run_id = now.strftime("%Y%m%d-%H%M%S")
     out = Path(a.out)
     if a.from_raw:
-        raw = Path(a.from_raw)
-        items = {k: json.loads((raw / f"{k}.json").read_text()) for k in ACTORS}
-        errors = json.loads((raw / "errors.json").read_text())
+        items, runs = load_raw(Path(a.from_raw), urls)
     else:
         token = os.environ.get("APIFY_TOKEN") or os.environ.get("APIFY_API_TOKEN")
         if not token:
             sys.exit("APIFY_TOKEN not set (put it in .env and run with: uv run --env-file .env ...)")
         from apify_client import ApifyClient
-        items, errors = fetch(ApifyClient(token), urls, cfg, out / "raw" / run_id)
+        items, runs = fetch(ApifyClient(token), urls, cfg, out / "raw" / run_id, now)
 
     users = [username(u) for u in urls]
     grouped = {}
@@ -310,7 +386,7 @@ def main():
     from typesafe_sdk import TypeSafeClient
     with TypeSafeClient() as ts, ThreadPoolExecutor(cfg["judge"]["workers"]) as ex:
         questions = build_questions(cfg)
-        rows = list(ex.map(lambda url: analyze(url, grouped, errors, now, cfg, ts, questions), urls))
+        rows = list(ex.map(lambda url: analyze(url, grouped, runs, now, cfg, ts, questions), urls))
 
     out.mkdir(parents=True, exist_ok=True)
     (out / f"{run_id}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
@@ -321,7 +397,8 @@ def main():
     by = {}
     for r in rows:
         by[r["activity_status"]] = by.get(r["activity_status"], 0) + 1
-    print(f"wrote {out / run_id}.jsonl + .csv | {by}", file=sys.stderr)
+    flagged = sum(r["data_quality_warning"] for r in rows)
+    print(f"wrote {out / run_id}.jsonl + .csv | {by} | {flagged} rows flagged for review", file=sys.stderr)
 
 
 if __name__ == "__main__":

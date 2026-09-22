@@ -13,10 +13,8 @@ posts = 1.50
 comments = 2.00
 reactions = 2.00
 
-[windows_days]
-recent = 7
-active = 30
-stale = 90
+# Activity windows are fixed in code at 7 / 30 / 90 days: the output field names (active_30d, ..._count_30d)
+# and the question text below all depend on them, so they are deliberately not configurable.
 
 [judge]
 model = "jev-latest"
@@ -24,8 +22,9 @@ outreach_ready_threshold = 0.4   # linkedin_outreach_ready = noul probability >=
 workers = 8
 
 # --- TypeSafe questions. State sent per profile: {"summary": {...}, "evidence": [...]} ---
-# evidence items: posts/comments carry exact "age_days"; reactions carry "age_days_at_most"
+# evidence items: posts/reposts/comments carry exact "age_days"; reactions carry "age_days_at_most"
 # (LinkedIn exposes no reaction timestamp; a reaction cannot be older than the post it is on).
+# Ages are days with one decimal (30.9 = just over 30 days). summary may list "sources_unavailable" when an actor failed.
 
 [questions.activity_status]
 type = "choice"
