@@ -213,8 +213,13 @@ def fetch(client, urls, cfg, raw_dir, now):
         # ponytail: HarvestAPI log-format heuristic; replace if the actor ever reports per-profile errors in the dataset.
         try:
             log = client.run(r.id).log().get() or ""
-        except Exception as e:
-            log, entry["log_error"] = "", f"{type(e).__name__}: {e}"
+        except Exception as e:  # without the log, a profile with zero items cannot be told apart from a skipped one
+            entry["log_error"] = f"{type(e).__name__}: {e}"
+            got = {username(json.dumps(it.get("query"))) for it in items}
+            empty = [p for p in chunk if username(p) not in got]
+            unverified = [{"kind": kind, "profiles": empty, "run_id": r.id, "status": r.status,
+                           "error": f"collection unverified: no {kind} returned and the run log was unavailable ({entry['log_error']})"}]
+            return [entry] + (unverified if empty else []), items
         skipped = {u: msg for target, msg in re.findall(r'Error scraping item#\d+ (\{.*?\}): "?(.*?)"?$', log, re.M)
                    if (u := username(target))}
         if not skipped:

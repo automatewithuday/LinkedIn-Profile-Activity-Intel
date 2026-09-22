@@ -69,7 +69,9 @@ A reaction on an old post proves nothing recent and is never counted as recent.
   `out/raw/<run>/manifest.json` with the queried profiles, timestamp and config. Charge fields (`charged_events`, `usage_usd`)
   are observed at run end and lag, often showing 0: every entry carries `charges_final: false` and `charges_observed_at`,
   so never read them as a final bill; the Apify Console has it. Charge/log lookups are best-effort (`charges_error` /
-  `log_error` when they fail) and never affect the scraped data.
+  `log_error` when they fail) and never discard scraped data. But the log is the only way to tell an empty profile from a
+  skipped one, so when it is unavailable every profile that returned zero items for that source is marked
+  `collection unverified` (502 for that source): with no other evidence its status stays null, never `no_activity_observed`.
 - A `SUCCEEDED` HarvestAPI run can still skip profiles: live, the posts actor logged `Error scraping item#N {...}: "Too many
   queued requests (code_22)"` for 3-4 of 10 profiles and returned 0 posts for them. `fetch()` scans the run log for that
   line, drops the affected profiles' partial items, retries them once in a separate run, and on a second failure (or a

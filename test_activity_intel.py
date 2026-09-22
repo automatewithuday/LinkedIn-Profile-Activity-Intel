@@ -320,7 +320,17 @@ def test_retry_or_metadata_failure_never_discards_the_first_runs_results(tmp_pat
             raise TimeoutError("meta")
 
     client = NoMeta({"posts": ("SUCCEEDED", janes), "comments": ("SUCCEEDED", []), "reactions": ("SUCCEEDED", [])})
-    items, runs = fetch(client, [jane], CFG, tmp_path / "b", NOW)
-    assert items["posts"] == janes and all(r["error"] is None for r in runs)
-    assert runs[0]["charges_final"] is False and runs[0]["charged_events"] is None and "TimeoutError" in runs[0]["charges_error"]
-    assert "TimeoutError" in runs[0]["log_error"] and runs[0]["charges_observed_at"]
+    items, runs = fetch(client, [jane, bob], CFG, tmp_path / "b", NOW)
+    assert items["posts"] == janes
+    main_ = [r for r in runs if r["error"] is None]
+    assert len(main_) == 3 and all(r["charges_final"] is False and r["charged_events"] is None and "TimeoutError" in r["charges_error"]
+                                   and "TimeoutError" in r["log_error"] and r["charges_observed_at"] for r in main_)
+    # without the log, a profile that returned nothing might have been skipped: it is unverified, not "no activity"
+    unverified = [r for r in runs if r["error"]]
+    assert [(r["kind"], r["profiles"]) for r in unverified] == [("posts", [bob]), ("comments", [jane, bob]), ("reactions", [jane, bob])]
+    assert all("collection unverified" in r["error"] for r in unverified)
+    grouped = {"posts": {"jane": janes, "bob": []}, "comments": {}, "reactions": {}}
+    b = analyze(bob, grouped, runs, NOW, CFG, None, None)
+    assert b["success"] is False and b["status_code"] == 502 and b["activity_status"] is None and b["data_quality_warning"]
+    j = analyze(jane, grouped, runs, NOW, CFG, FakeTS(), None)  # has posts: judged, but flagged with the unverified sources
+    assert j["activity_status"] == "active" and j["status_code"] == 502 and j["success"] and j["data_quality_warning"]
