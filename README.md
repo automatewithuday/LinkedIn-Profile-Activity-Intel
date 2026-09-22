@@ -306,6 +306,10 @@ If you want to reimplement this in another language or stack, the pieces are:
 
 ---
 
+## License
+
+MIT — see [LICENSE](LICENSE). Use it, change it, sell with it; just keep the notice.
+
 ## Credits
 
 Built on [HarvestAPI](https://apify.com/harvestapi) actors (Apify) and [TypeSafe](https://typesafe.ai). Inspired by the output format of [LinkedPulse](https://apify.com/saasydb/linkedpulse-linkedin-activity-intelligence). Not affiliated with LinkedIn.
