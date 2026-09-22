@@ -190,29 +190,48 @@ def fetch(client, urls, cfg, raw_dir, now):
     f = cfg["fetch"]
     items, runs = {k: [] for k in ACTORS}, []
 
-    def run(kind, chunk):
+    def run(kind, chunk, retry=True):
         inp = ({"targetUrls": chunk, "maxPosts": f["max_posts"], "includeReposts": f["include_reposts"],
                 "includeQuotePosts": f["include_quote_posts"]} if kind == "posts"
                else {"profiles": chunk, "maxItems": f[f"max_{kind}"]})
         r = client.actor(ACTORS[kind]).call(run_input=inp, max_total_charge_usd=run_cap(len(chunk), kind, cfg), logger=None)
-        entry = {"kind": kind, "profiles": chunk, "run_id": r.id, "status": r.status,
-                 "usage_usd": float(r.usage_total_usd) if r.usage_total_usd is not None else None, "error": None}
         if r.status != "SUCCEEDED":  # call() returns FAILED / TIMED-OUT / ABORTED runs too, with empty or partial datasets
-            return entry | {"error": f"run {r.id} {r.status}: {r.status_message}"}, []
-        return entry, client.dataset(r.default_dataset_id).list_items().items
+            return [{"kind": kind, "profiles": chunk, "run_id": r.id, "status": r.status,
+                     "error": f"run {r.id} {r.status}: {r.status_message}"}], []
+        # A SUCCEEDED run can still silently skip profiles (live: upstream "Too many queued requests (code_22)" gave 0 posts
+        # for 3-4 of 10 profiles). The only trace is the actor log, so scan it per profile.
+        # ponytail: HarvestAPI log-format heuristic; replace if the actor ever reports per-profile errors in the dataset.
+        log = client.run(r.id).log().get() or ""
+        skipped = {u: msg for target, msg in re.findall(r'Error scraping item#\d+ (\{.*?\}): "?(.*?)"?$', log, re.M)
+                   if (u := username(target))}
+        final = client.run(r.id).get()  # charge counters lag the run end (often by minutes); recorded as read, Console has the final
+        entries = [{"kind": kind, "profiles": chunk, "run_id": r.id, "status": r.status,
+                    "charged_events": final.charged_event_counts, "usage_usd": final.usage_total_usd, "error": None}]
+        items = client.dataset(r.default_dataset_id).list_items().items
+        if skipped:
+            urls_ = [p for p in chunk if username(p) in skipped]
+            items = [it for it in items if username(json.dumps(it.get("query"))) not in skipped]  # keep only complete profiles
+            if retry:  # skipped profiles returned nothing, so were not charged: one retry costs what the first try should have
+                print(f"[fetch] {kind}: actor skipped {len(urls_)} profiles, retrying once", file=sys.stderr)
+                more_entries, more_items = run(kind, urls_, retry=False)
+                return entries + more_entries, items + more_items
+            entries.append({"kind": kind, "profiles": urls_, "run_id": r.id, "status": r.status,
+                            "error": f"actor errors for {len(urls_)} profiles: {'; '.join(sorted(set(skipped.values())))}"})
+        return entries, items
 
     with ThreadPoolExecutor(3) as ex:
         for chunk in chunks(urls, cfg):
             futs = {k: ex.submit(run, k, chunk) for k in ACTORS}
             for k, fut in futs.items():
                 try:
-                    entry, got = fut.result()
+                    entries, got = fut.result()
                 except Exception as e:  # one actor failing must not lose the other two
-                    entry, got = {"kind": k, "profiles": chunk, "error": f"{type(e).__name__}: {e}"}, []
-                runs.append(entry)
+                    entries, got = [{"kind": k, "profiles": chunk, "error": f"{type(e).__name__}: {e}"}], []
+                runs += entries
                 items[k] += got
-                if entry["error"]:
-                    print(f"[fetch] {k} failed for {len(chunk)} profiles: {entry['error']}", file=sys.stderr)
+                for e in entries:
+                    if e["error"]:
+                        print(f"[fetch] {k} failed for {len(e['profiles'])} profiles: {e['error']}", file=sys.stderr)
     raw_dir.mkdir(parents=True, exist_ok=True)
     for k, v in items.items():
         (raw_dir / f"{k}.json").write_text(json.dumps(v, default=str))
@@ -357,7 +376,8 @@ def main():
         est = estimate_cost(len(urls), cfg)
         cap = sum(run_cap(len(c), k, cfg) for c in chunks(urls, cfg) for k in ACTORS)
         print(f"{len(urls)} profiles | est. Apify ${sum(est.values()):.2f} "
-              f"({', '.join(f'{k} ${v:.2f}' for k, v in est.items())}) | hard cap ${cap:.2f} (sum of per-run spend caps)",
+              f"({', '.join(f'{k} ${v:.2f}' for k, v in est.items())}) | hard cap ${cap:.2f} (sum of per-run spend caps; "
+              f"a one-off retry of profiles the actor skipped can add at most the same again)",
               file=sys.stderr)
     if a.dry_run:
         return

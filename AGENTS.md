@@ -65,8 +65,13 @@ A reaction on an old post proves nothing recent and is never counted as recent.
   original poster. Code counts them as `repost` evidence, never as authored posts.
 
 - Apify `call()` returns FAILED / TIMED-OUT / ABORTED runs as normal objects with an empty or partial dataset; `fetch()` treats
-  anything but `SUCCEEDED` as a failure for that run's profiles. Run ids, statuses and usage are in `out/raw/<run>/manifest.json`
-  together with the queried profiles, the timestamp and the config used.
+  anything but `SUCCEEDED` as a failure for that run's profiles. Run ids, statuses and charge counters are in
+  `out/raw/<run>/manifest.json` with the queried profiles, timestamp and config. Counters are read at run end and lag
+  (often show 0); the Apify Console has the final charge.
+- A `SUCCEEDED` HarvestAPI run can still skip profiles: live, the posts actor logged `Error scraping item#N {...}: "Too many
+  queued requests (code_22)"` for 3-4 of 10 profiles and returned 0 posts for them. `fetch()` scans the run log for that
+  line, drops the affected profiles' partial items, retries them once in a separate run, and on a second failure marks
+  them 502 for that source. This is a log-format heuristic; if unmatched-but-empty profiles appear, check the run log.
 - `attribute()` treats the `query` echo as authoritative: an item whose query owner is not in the current input is unmatched,
   never reassigned via `author`/`repostedBy`. With `--from-raw` on a subset of the cached profiles, unmatched counts are expected.
 

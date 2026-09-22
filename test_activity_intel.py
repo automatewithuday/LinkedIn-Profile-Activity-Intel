@@ -41,9 +41,10 @@ class FakeTS:
 
 
 class FakeApify:
-    """client.actor(name).call(...) -> run; client.dataset(id).list_items().items. `plan` maps kind -> (status, items) or Exception."""
-    def __init__(self, plan):
-        self.plan, self.calls = plan, []
+    """client.actor(name).call(...) -> run; client.dataset(id).list_items().items; client.run(id).log().get().
+    `plan` maps kind -> (status, items) or Exception; `logs` maps kind -> actor log text."""
+    def __init__(self, plan, logs=None):
+        self.plan, self.calls, self.logs = plan, [], logs or {}
 
     def actor(self, name):
         kind = next(k for k, v in ACTORS.items() if v == name)
@@ -54,8 +55,14 @@ class FakeApify:
                 raise got
             status, items = got
             self.data = getattr(self, "data", {}) | {kind: items}
-            return NS(id=f"run-{kind}", status=status, status_message="msg", usage_total_usd=0.01, default_dataset_id=kind)
+            return NS(id=f"run-{kind}", status=status, status_message="msg", charged_event_counts={"post": len(items)},
+                      default_dataset_id=kind)
         return NS(call=call)
+
+    def run(self, id_):
+        kind = id_.removeprefix("run-")
+        return NS(log=lambda: NS(get=lambda: self.logs.get(kind, "")),
+                  get=lambda: NS(charged_event_counts={"post": len(self.data[kind])}, usage_total_usd=0.01))
 
     def dataset(self, id_):
         return NS(list_items=lambda: NS(items=self.data[id_]))
@@ -164,6 +171,7 @@ def test_failed_apify_run_is_unknown_not_no_activity(tmp_path):
     assert [r["error"] is not None for r in runs] == [True, False, True] and runs[0]["run_id"] == "run-posts"
     m = json.loads((tmp_path / "raw" / "manifest.json").read_text())
     assert m["profiles"] == [url] and len(m["runs"]) == 3 and m["config"]["fetch"]["max_posts"] == 5
+    assert m["runs"][1]["charged_events"] == {"post": 0}
     row = analyze(url, EMPTY, runs, NOW, CFG, None, None)
     assert row["success"] and row["status_code"] == 502 and row["activity_status"] is None and "FAILED" in row["error"]
 
@@ -264,3 +272,19 @@ def test_latest_activity_metadata_and_sample_caps():
     assert facts["samples_at_cap"] == "comments"
     facts, _ = build_evidence([post(3)], [], [], NOW, WIN, caps)
     assert facts["most_recent_activity_url"] == "https://lnkd/p3" and facts["samples_at_cap"] == ""
+
+
+def test_succeeded_run_that_skipped_profiles_in_its_log_marks_them_failed(tmp_path):
+    jane, bob = "https://www.linkedin.com/in/jane", "https://www.linkedin.com/in/bob"
+    log = ('2026-09-22T03:19:26.053Z Fetching posts for {"targetUrl":"https://www.linkedin.com/in/bob"}...\n'
+           '2026-09-22T03:19:26.062Z Error scraping item#1 {"targetUrl":"https://www.linkedin.com/in/bob"}: "Too many queued requests (code_22)"\n'
+           '2026-09-22T03:19:26.062Z Scraped posts for {"targetUrl":"https://www.linkedin.com/in/bob"}. Posts found 0. Progress: 2/10\n')
+    client = FakeApify({"posts": ("SUCCEEDED", [post(1) | {"query": {"targetUrl": jane}}]),
+                        "comments": ("SUCCEEDED", []), "reactions": ("SUCCEEDED", [])}, logs={"posts": log})
+    items, runs = fetch(client, [jane, bob], CFG, tmp_path, NOW)
+    assert [c[1].get("targetUrls") for c in client.calls if c[0] == "posts"] == [[jane, bob], [bob]]  # one retry, bob only
+    skipped = [r for r in runs if r["error"]]
+    assert len(skipped) == 1 and skipped[0]["profiles"] == [bob] and "code_22" in skipped[0]["error"]
+    assert analyze(jane, {"posts": {"jane": items["posts"]}, "comments": {}, "reactions": {}}, runs, NOW, CFG, FakeTS(), None)["status_code"] == 200
+    b = analyze(bob, EMPTY, runs, NOW, CFG, None, None)
+    assert b["status_code"] == 502 and b["activity_status"] is None and "posts: actor errors" in b["error"]

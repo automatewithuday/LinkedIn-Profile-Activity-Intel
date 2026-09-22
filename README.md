@@ -264,7 +264,7 @@ Only TypeSafe is called again (a fraction of a cent). Apify is not touched. A pr
 - **Only public activity counts.** Reading the feed, DMs and private-mode activity are invisible. A person can be on LinkedIn daily and still show as inactive if they never post, comment or react.
 - **Comments are not returned newest-first.** With a small `max_comments`, the newest comment can be missed. Raise the cap if the exact latest comment matters to you.
 - **Validated on active profiles.** The rules were checked live on 11 real active profiles and on synthetic stale/dormant cases (all matched the date rule). No real dormant profile has been through it yet, and the 0.4 threshold has not been checked against reply outcomes: the probability is the model's judgment that LinkedIn is a live channel, not a measured reply rate. If a result looks wrong, the raw data for it is in `out/raw/`.
-- **Failures are per profile.** A failed Apify run (`FAILED`, `TIMED-OUT`, aborted by the spend cap) marks only the profiles in that run as unknown; the rest of the batch is unaffected. One malformed item is dropped and counted, never fatal.
+- **Failures are per profile.** A failed Apify run (`FAILED`, `TIMED-OUT`, aborted by the spend cap) marks only the profiles in that run as unknown; the rest of the batch is unaffected. One malformed item is dropped and counted, never fatal. A "successful" run that quietly skipped some profiles (seen live: HarvestAPI rate limits) is caught from the run log, retried once, and otherwise flagged.
 
 ---
 
@@ -310,6 +310,7 @@ If you want to reimplement this in another language or stack, the pieces are:
 | `no LinkedIn /in/ URLs found in input` | Input has no personal profile URLs, or the CSV column isn't named `linkedin_url` | Check the file |
 | `[attribute] N items matched no input profile` | With `--from-raw`: the cache holds profiles you did not list this time (normal). On a live run: HarvestAPI changed its output format | Live run: inspect `out/raw/<run>/*.json` and open an issue |
 | `[fetch] posts failed for N profiles: run … FAILED` | That Apify run ended without `SUCCEEDED` (actor error, timeout, or the spend cap stopped it) | Those profiles get `502`; re-run just them. Run id and status are in `out/raw/<run>/manifest.json` |
+| `[fetch] posts: actor skipped N profiles, retrying once` | HarvestAPI's backend was busy (`Too many queued requests`) and returned nothing for those profiles even though the run "succeeded" | Automatic: they are retried once in their own run. If that fails too they get `502` with `actor errors for N profiles` |
 | `[from-raw] no manifest.json` | Cache made by an older version | Still works, but profiles missing from the cache look like "no activity"; re-fetch to get a manifest |
 | Row has `status_code: 502` | A data source or TypeSafe failed for that profile (`error` says which) | Re-run; the row's verdict is blank rather than wrong |
 | Row has `status_code: 500` | Unexpected error for that one profile (`error` has the exception) | Open an issue with the row and its raw items |
