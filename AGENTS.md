@@ -1,6 +1,7 @@
 # AGENTS.md
 
-Checks whether LinkedIn profiles are publicly active, and when. Evidence comes from three
+Qualifies LinkedIn outreach lists: checks whether each profile is publicly active, and when, so only people who
+actually use LinkedIn go into a campaign. Evidence comes from three
 HarvestAPI actors on Apify (posts, comments, reactions); code computes the dates and counts;
 TypeSafe (Jev) makes the status / level / confidence / outreach-ready judgments.
 One module: `activity_intel.py`. No LLM text generation anywhere.

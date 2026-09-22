@@ -1,6 +1,8 @@
 # LinkedIn Profile Activity Intel
 
-**Find out whether a LinkedIn profile is worth reaching out to, and get the reason.**
+**Qualify your LinkedIn outreach list before you send a single message.**
+
+If you run LinkedIn outreach campaigns, you only want to reach people who actually use LinkedIn. Messaging someone who last logged in eight months ago wastes a connection request, a seat and a follow-up sequence. This tool checks each profile's public activity and tells you who is worth contacting on LinkedIn right now, with the reason, so you add only active profiles to your campaign.
 
 Give it a list of LinkedIn profile URLs. For each one it tells you:
 
