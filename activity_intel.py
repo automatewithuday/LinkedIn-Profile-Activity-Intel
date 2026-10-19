@@ -70,7 +70,7 @@ def attribute(kind, items, usernames):
     missed = 0
     for it in items:
         if it.get("query"):  # the actor's echo of its input names the owner; never hand their item to someone else
-            cands = [username(json.dumps(it["query"]))]
+            cands = [username(json.dumps(it["query"], ensure_ascii=False))]
         else:  # fallbacks for items without a query echo
             cands = [
                 username((it.get("actor") or {}).get("linkedinUrl")) if kind != "posts" else None,
@@ -215,7 +215,7 @@ def fetch(client, urls, cfg, raw_dir, now):
             log = client.run(r.id).log().get() or ""
         except Exception as e:  # without the log, a profile with zero items cannot be told apart from a skipped one
             entry["log_error"] = f"{type(e).__name__}: {e}"
-            got = {username(json.dumps(it.get("query"))) for it in items}
+            got = {username(json.dumps(it.get("query"), ensure_ascii=False)) for it in items}
             empty = [p for p in chunk if username(p) not in got]
             unverified = [{"kind": kind, "profiles": empty, "run_id": r.id, "status": r.status,
                            "error": f"collection unverified: no {kind} returned and the run log was unavailable ({entry['log_error']})"}]
@@ -225,7 +225,7 @@ def fetch(client, urls, cfg, raw_dir, now):
         if not skipped:
             return [entry], items
         urls_ = [p for p in chunk if username(p) in skipped]
-        items = [it for it in items if username(json.dumps(it.get("query"))) not in skipped]  # keep only complete profiles
+        items = [it for it in items if username(json.dumps(it.get("query"), ensure_ascii=False)) not in skipped]  # keep only complete profiles
         why = f"actor errors for {len(urls_)} profiles: {'; '.join(sorted(set(skipped.values())))}"
         if retry:  # skipped profiles returned nothing, so were not charged: one retry costs what the first try should have
             print(f"[fetch] {kind}: actor skipped {len(urls_)} profiles, retrying once", file=sys.stderr)

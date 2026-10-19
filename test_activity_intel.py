@@ -334,3 +334,12 @@ def test_retry_or_metadata_failure_never_discards_the_first_runs_results(tmp_pat
     assert b["success"] is False and b["status_code"] == 502 and b["activity_status"] is None and b["data_quality_warning"]
     j = analyze(jane, grouped, runs, NOW, CFG, FakeTS(), None)  # has posts: judged, but flagged with the unverified sources
     assert j["activity_status"] == "active" and j["status_code"] == 502 and j["success"] and j["data_quality_warning"]
+
+
+def test_non_ascii_vanity_slug_attributes_items():
+    """Vanity slugs can contain emoji. The actor echoes the decoded URL; json.dumps must not escape it
+    (ensure_ascii) or username() never matches the input and the profile is reported as having no activity."""
+    from activity_intel import attribute, username
+    url = "https://www.linkedin.com/in/cody-smith-🇨🇦-49b"
+    grouped, missed = attribute("comments", [{"query": {"profile": url}, "commentary": "x"}], [username(url)])
+    assert missed == 0 and len(grouped[username(url)]) == 1
