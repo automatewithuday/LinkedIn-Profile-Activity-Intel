@@ -8,7 +8,7 @@ Give it a list of LinkedIn profile URLs. For each one it tells you:
 
 - **Is this person worth contacting on LinkedIn right now?** — yes/no, a probability, and a plain-English reason
 - **When were they last active, and how?** — their own post, a repost, a comment, or a reaction
-- **How active are they?** — status (`active` / `stale` / `inactive`), level and confidence
+- **How active are they?** — status (`active`, or `no_activity_observed` when nothing public in the last 30 days), level and confidence
 - **The evidence** — dates, counts and links to their most recent post and comment
 
 No LinkedIn login or cookies. You bring two API keys ([Apify](https://apify.com) and [TypeSafe](https://typesafe.ai)) and pay only their usage: about **$0.04 per profile**.
@@ -111,7 +111,7 @@ One row per input profile, in both CSV and JSONL. The important columns first:
 | Column | Meaning |
 |---|---|
 | `linkedin_outreach_ready` | `true` if this person is worth contacting on LinkedIn now. |
-| `outreach_ready_probability` | 0 to 1. **Sort by this** to prioritise a list. People who post score ~0.9; people who only like and comment ~0.8; someone whose only trace is one post a month ago ~0.5–0.7; stale profiles ~0.1. |
+| `outreach_ready_probability` | 0 to 1. **Sort by this** to prioritise a list. People who post score ~0.9; people who only like and comment ~0.8; someone whose only trace is one post a month ago ~0.5–0.7. Profiles with nothing public in the last 30 days are not scored: they come back `no_activity_observed`, not ready. That is a channel decision, not a dead account: people who read LinkedIn without posting, commenting or reacting leave no trace. |
 | `outreach_reason` | The reasoning in one paragraph (see the example at the top). |
 
 ### When and how they were last active
