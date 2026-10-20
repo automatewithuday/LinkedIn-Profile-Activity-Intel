@@ -15,7 +15,7 @@ No LinkedIn login or cookies. You bring two API keys ([Apify](https://apify.com)
 
 Example output for one profile (a person who likes and comments but rarely posts):
 
-> **Worth reaching out on LinkedIn now (probability 0.83).** Status active: most recent evidence is a reaction on a post from today (so the reaction is at most 1d old). Last 30 days in sample: 0 own posts, 0 reposts, 5 comments, 10 reactions. Engages with others' content rather than posting (no own posts observed). Activity level high; evidence confidence medium (reaction dates are lower bounds).
+> **Worth reaching out on LinkedIn now (probability 0.86).** Status active: most recent evidence is a comment 1d ago. Last 30 days in sample: 0 own posts, 0 reposts, 5 comments, 3 reactions. Engages with others' content rather than posting (no own posts observed). Activity level high; evidence confidence high.
 
 ---
 
@@ -147,9 +147,9 @@ One row per input profile, in both CSV and JSONL. The important columns first:
 | `samples_at_cap` | Which sources hit their fetch cap (e.g. `comments,reactions`): the person may have newer activity that was not in the sample. |
 | `rejected_evidence_count` | Items dropped because their date was missing, malformed or in the future. |
 | `status_matches_date_rule` | `false` means TypeSafe's status disagreed with the plain 30/90-day arithmetic. Rare; worth a look. |
+| `typesafe_status_confidence` | 0 to 1, how sure TypeSafe was about the status. |
 
 **Before exporting a list to a campaign, hold back rows where `data_quality_warning` is `true` or `status_matches_date_rule` is `false`** and look at them by hand. The run summary on stderr counts them for you.
-| `typesafe_status_confidence` | 0 to 1, how sure TypeSafe was about the status. |
 
 ---
 
@@ -229,7 +229,7 @@ Apify charges per item fetched. With the default caps of 5 posts, 5 comments and
 | **Total** | | **≈ $0.03, or $28 per 1,000 profiles** |
 
 That is the maximum. `fetch.posted_limit = "month"` (the default) asks the actors for items from the last 30 days only, so a
-profile with nothing recent returns nothing and costs about $0.001 (the posts actor's no-result fee). A list that is mostly
+profile with nothing recent returns nothing and costs close to nothing (at most the posts actor's $0.001 no-result fee). A list that is mostly
 dormant lands well under the maximum: the people you were going to skip are the ones you barely pay for. The price is that
 `stale` and `inactive` can no longer be told apart (both become `no_activity_observed`); set `posted_limit = ""` to fetch
 everything and get them back at full price. `--dry-run` prints two numbers: the **estimate** (what the caps above add up to) and the **hard cap** (the most Apify is authorised to charge: each actor run gets estimate + 25% + $0.05 headroom, so for one profile that is $0.18 even though the estimate is $0.03). The cap exists so a surprise can't run away; the estimate is what you should expect to pay.
@@ -265,10 +265,10 @@ Only TypeSafe is called again (a fraction of a cent). Apify is not touched. A pr
 
 ## Things to know before trusting a big list
 
-- **Samples, not totals.** Counts are capped by the settings. "10 reactions" means the fetch cap was hit, not that the person made exactly 10. `samples_at_cap` tells you which sources were saturated.
+- **Samples, not totals.** Counts are capped by the settings. "5 reactions" means the fetch cap was hit, not that the person made exactly 5. `samples_at_cap` tells you which sources were saturated.
 - **Activity level saturates.** At the default caps, anyone reasonably active fills the whole sample inside 30 days and scores `high`. To rank active people against each other, sort by `outreach_ready_probability` instead.
 - **Probabilities wobble slightly.** The same evidence can score 0.78 one run and 0.83 the next. Treat anything between about 0.35 and 0.45 as "maybe" rather than a firm yes or no.
-- **Only public activity counts.** Reading the feed, DMs and private-mode activity are invisible. A person can be on LinkedIn daily and still show as inactive if they never post, comment or react.
+- **Only public activity counts.** Reading the feed, DMs and private-mode activity are invisible. A person can be on LinkedIn daily and still come back `no_activity_observed` if they never post, comment or react.
 - **Comments are not returned newest-first.** With a small `max_comments`, the newest comment can be missed. Raise the cap if the exact latest comment matters to you.
 - **Validated on active profiles.** The rules were checked live on 11 real active profiles and on synthetic stale/dormant cases (all matched the date rule). No real dormant profile has been through it yet, and the 0.4 threshold has not been checked against reply outcomes: the probability is the model's judgment that LinkedIn is a live channel, not a measured reply rate. If a result looks wrong, the raw data for it is in `out/raw/`.
 - **Failures are per profile.** A failed Apify run (`FAILED`, `TIMED-OUT`, aborted by the spend cap) marks only the profiles in that run as unknown; the rest of the batch is unaffected. One malformed item is dropped and counted, never fatal. A "successful" run that quietly skipped some profiles (seen live: HarvestAPI rate limits) is caught from the run log, retried once, and otherwise flagged.
@@ -286,7 +286,7 @@ So you can say things like *"check which of the people in prospects.csv are wort
 ## Project layout
 
 ```
-activity_intel.py         the whole tool (~300 lines): load → fetch → compute → judge → explain → write
+activity_intel.py         the whole tool (~450 lines): load → fetch → compute → judge → explain → write
 config.toml               all tunable values and the TypeSafe question wording
 test_activity_intel.py    offline tests (uv run pytest -q) — no network, no keys needed
 AGENTS.md                 instructions for coding agents (CLAUDE.md imports it)

@@ -89,5 +89,5 @@ A reaction on an old post proves nothing recent and is never counted as recent.
 If stderr reports unmatched items on a LIVE run, inspect `out/raw/<run>/*.json`.
 
 ## Tests
-`uv run pytest -q` — 21 offline tests (no network): evidence rules, window edges, replay ownership, failed runs, malformed
+`uv run pytest -q` — 22 offline tests (no network): evidence rules, window edges, replay ownership, failed runs, malformed
 timestamps, per-chunk error isolation, TypeSafe failure, cost/cap agreement, confidence ceiling. CI runs them on every push.
