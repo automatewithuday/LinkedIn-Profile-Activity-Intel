@@ -8,7 +8,7 @@ from activity_intel import (ACTORS, FIELDS, WINDOWS, analyze, attribute, build_e
 NOW = datetime(2026, 9, 22, tzinfo=timezone.utc)
 WIN = WINDOWS
 CFG = {"fetch": {"max_posts": 5, "max_comments": 5, "max_reactions": 10, "chunk_size": 50,
-                 "include_reposts": True, "include_quote_posts": True},
+                 "include_reposts": True, "include_quote_posts": True, "posted_limit": "month"},
        "prices_usd_per_1000": {"posts": 1.5, "comments": 2.0, "reactions": 2.0},
        "judge": {"model": "jev-latest", "outreach_ready_threshold": 0.5, "workers": 1},
        "questions": {"activity_level": {"labels": ["minimal", "low", "moderate", "high"]},
@@ -258,6 +258,9 @@ def test_dry_run_reports_estimate_and_authorized_caps_separately():
     with tempfile.TemporaryDirectory() as d:
         fetch(client, ["https://www.linkedin.com/in/jane"], CFG, Path(d), NOW)
     assert sum(c[2] for c in client.calls) == caps  # fetch() authorizes exactly what --dry-run prints
+    assert all(c[1]["postedLimit"] == "month" for c in client.calls)  # every actor only fetches (bills) the window
+    assert "in the last 30 days" in explain(dict.fromkeys(FIELDS), NOW, "month")
+    assert "in the last 30 days" not in explain(dict.fromkeys(FIELDS), NOW, None)
 
 
 def test_reaction_only_confidence_is_capped_at_medium():

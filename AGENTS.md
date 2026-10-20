@@ -19,8 +19,9 @@ Input: CSV with a `linkedin_url` column, or a text file with one profile URL per
 Options: `--limit N`, `--config path`, `--out dir`.
 
 ## Rules for agents
-- `config.toml` is user-owned (fetch caps, thresholds, TypeSafe question wording).
-  Propose changes; never edit its values unprompted. The 7/30/90-day windows are fixed in code (`WINDOWS`):
+- `config.toml` is user-owned (fetch caps, `posted_limit`, thresholds, TypeSafe question wording).
+  Propose changes; never edit its values unprompted. `posted_limit = "month"` is the main cost lever: the actors only
+  return (and bill) items from the last 30 days, so dormant profiles cost ~$0.001; `stale`/`inactive` then never occur. The 7/30/90-day windows are fixed in code (`WINDOWS`):
   output field names and question text depend on them.
 - Run `--dry-run` and tell the user BOTH numbers before any paid run: the estimate (expected charge) and the hard cap
   (sum of per-run `max_total_charge_usd` = estimate + 25% + $0.05 per actor run; $0.20 for a single profile).
@@ -37,7 +38,7 @@ Options: `--limit N`, `--config path`, `--out dir`.
 | `linkedin_outreach_ready`, `outreach_ready_probability` | TypeSafe | THE verdict: is this profile worth reaching out to on LinkedIn now. Probability ≥ `judge.outreach_ready_threshold`; sort by probability to prioritise |
 | `outreach_reason` | code | plain-English reasoning assembled from the facts + Jev's answers (TypeSafe cannot write text; no LLM involved) |
 | `days_since_last_activity`, `last_activity_type`, `most_recent_activity_url` | code | newest evidence of any kind (days, 1 decimal; rounded UP for reactions since it is an upper bound); the URL for a `reaction` is the post reacted to. TypeSafe receives the unrounded ages |
-| `activity_status` | TypeSafe | `active` (≤30d) / `stale` (31–90d) / `inactive` (>90d); `no_activity_observed` set by code when no evidence; null if fetch failed |
+| `activity_status` | TypeSafe | `active` (≤30d) / `stale` (31–90d) / `inactive` (>90d); `no_activity_observed` set by code when no evidence (= nothing inside `posted_limit`); null if fetch failed |
 | `activity_level` | TypeSafe | `minimal` / `low` / `moderate` / `high` (`none` when no evidence) |
 | `activity_confidence` | TypeSafe | `low` / `medium` / `high` — how well the evidence supports the timing; code caps it at `medium` when no exactly-dated evidence exists |
 | `typesafe_status_confidence` | TypeSafe | 0–1 concentration of the status choice |
@@ -80,6 +81,10 @@ A reaction on an old post proves nothing recent and is never counted as recent.
   heuristic; if unmatched-but-empty profiles appear, check the run log.
 - `attribute()` treats the `query` echo as authoritative: an item whose query owner is not in the current input is unmatched,
   never reassigned via `author`/`repostedBy`. With `--from-raw` on a subset of the cached profiles, unmatched counts are expected.
+
+- `postedLimit` verified live (2026-10-20, `out/raw/20261020-171717`): with `"month"` the posts actor returned only the 4 posts
+  from the last 5 days for a profile whose older posts are 459d+; reactions came back 5 and 3 instead of 10 and 10. The
+  window is applied by HarvestAPI to the item's own time, so a comment on a 35-day-old post can still appear.
 
 If stderr reports unmatched items on a LIVE run, inspect `out/raw/<run>/*.json`.
 

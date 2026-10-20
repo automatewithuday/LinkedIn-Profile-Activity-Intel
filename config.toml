@@ -3,8 +3,11 @@
 [fetch]
 max_posts = 5          # per profile
 max_comments = 5
-max_reactions = 10
+max_reactions = 5      # every live profile hit the old cap of 10; the verdict comes from the newest item, counts only feed activity_level
 chunk_size = 50        # profiles per Apify actor run
+posted_limit = "month" # only fetch (and pay for) items from the last 30 days: "24h" / "week" / "month" / "" (everything).
+                       # With "month", a profile with nothing in 30 days returns no items and costs ~nothing, but
+                       # stale (31-90d) and inactive (>90d) collapse into no_activity_observed.
 include_reposts = true
 include_quote_posts = true
 

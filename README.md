@@ -121,7 +121,7 @@ One row per input profile, in both CSV and JSONL. The important columns first:
 | `days_since_last_activity` | Days since the newest evidence of any kind, with one decimal (`0.4` = about ten hours ago). For a reaction this is an upper bound. |
 | `last_activity_type` | `post`, `repost`, `comment` or `reaction`. |
 | `most_recent_activity_url` | Link to that newest item (for a reaction: the post they reacted to). |
-| `activity_status` | `active` (something within 30 days), `stale` (31–90 days), `inactive` (older than 90 days), `no_activity_observed` (nothing found). |
+| `activity_status` | `active` (something within 30 days), `stale` (31–90 days), `inactive` (older than 90 days), `no_activity_observed` (nothing found in the fetched window: with the default `posted_limit = "month"` that means nothing in 30 days, and `stale` / `inactive` do not occur). |
 | `activity_level` | `minimal` / `low` / `moderate` / `high`. |
 | `activity_confidence` | `low` / `medium` / `high`: how well the evidence pins down the timing. Reaction-only profiles get at most `medium`, because reactions have no exact date. |
 | `active_7d`, `active_30d`, `active_90d` | Simple yes/no flags. |
@@ -218,17 +218,21 @@ A repost is the person's own action, so it counts as activity, dated by when the
 
 ## Cost
 
-Apify charges per item fetched. With the default caps of 5 posts, 5 comments and 10 reactions per profile:
+Apify charges per item fetched. With the default caps of 5 posts, 5 comments and 5 reactions per profile:
 
 | Item | Price | Per profile (max) |
 |---|---|---|
 | Posts | $1.50 per 1,000 | $0.0075 |
 | Comments | $2.00 per 1,000 | $0.0100 |
-| Reactions | $2.00 per 1,000 | $0.0200 |
+| Reactions | $2.00 per 1,000 | $0.0100 |
 | TypeSafe | $0.042 per million tokens | ~$0.00002 |
-| **Total** | | **≈ $0.04, or $38 per 1,000 profiles** |
+| **Total** | | **≈ $0.03, or $28 per 1,000 profiles** |
 
-Profiles with less activity cost less (you only pay for items that exist). `--dry-run` prints two numbers: the **estimate** (what the caps above add up to) and the **hard cap** (the most Apify is authorised to charge: each actor run gets estimate + 25% + $0.05 headroom, so for one profile that is $0.20 even though the estimate is $0.04). The cap exists so a surprise can't run away; the estimate is what you should expect to pay.
+That is the maximum. `fetch.posted_limit = "month"` (the default) asks the actors for items from the last 30 days only, so a
+profile with nothing recent returns nothing and costs about $0.001 (the posts actor's no-result fee). A list that is mostly
+dormant lands well under the maximum: the people you were going to skip are the ones you barely pay for. The price is that
+`stale` and `inactive` can no longer be told apart (both become `no_activity_observed`); set `posted_limit = ""` to fetch
+everything and get them back at full price. `--dry-run` prints two numbers: the **estimate** (what the caps above add up to) and the **hard cap** (the most Apify is authorised to charge: each actor run gets estimate + 25% + $0.05 headroom, so for one profile that is $0.20 even though the estimate is $0.04). The cap exists so a surprise can't run away; the estimate is what you should expect to pay.
 
 For comparison, LinkedPulse's equivalent check costs $0.03 per profile; this tool costs slightly more but gives you the evidence, the reason, and full control over the rules.
 
@@ -240,7 +244,8 @@ Everything tunable is in one file with comments. The 7/30/90-day windows are fix
 
 | Setting | Default | What it does |
 |---|---|---|
-| `fetch.max_posts / max_comments / max_reactions` | 5 / 5 / 10 | How many of each to fetch per profile. Higher = more evidence, more cost. |
+| `fetch.max_posts / max_comments / max_reactions` | 5 / 5 / 5 | How many of each to fetch per profile. Higher = more evidence, more cost. |
+| `fetch.posted_limit` | `month` | Only fetch items from this window: `24h`, `week`, `month`, or `""` for everything. Items outside it are never billed. |
 | `fetch.chunk_size` | 50 | Profiles per Apify run. |
 | `judge.outreach_ready_threshold` | 0.4 | Probability at which `linkedin_outreach_ready` becomes `true`. Raise it to be pickier. |
 | `judge.workers` | 8 | Parallel TypeSafe calls. |

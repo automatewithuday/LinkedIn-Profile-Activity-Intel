@@ -196,6 +196,8 @@ def fetch(client, urls, cfg, raw_dir, now):
         inp = ({"targetUrls": chunk, "maxPosts": f["max_posts"], "includeReposts": f["include_reposts"],
                 "includeQuotePosts": f["include_quote_posts"]} if kind == "posts"
                else {"profiles": chunk, "maxItems": f[f"max_{kind}"]})
+        if f.get("posted_limit"):  # HarvestAPI bills per item returned: an empty window is nearly free
+            inp["postedLimit"] = f["posted_limit"]
         r = client.actor(ACTORS[kind]).call(run_input=inp, max_total_charge_usd=run_cap(len(chunk), kind, cfg), logger=None)
         if r.status != "SUCCEEDED":  # call() returns FAILED / TIMED-OUT / ABORTED runs too, with empty or partial datasets
             return [{"kind": kind, "profiles": chunk, "run_id": r.id, "status": r.status,
@@ -314,11 +316,16 @@ def judge(ts, questions, facts, evidence, cfg, sources_unavailable=()):
 
 # ---------- assemble ----------
 
-def explain(row, now):
+POSTED_LIMIT_TEXT = {"24h": "in the last 24 hours", "week": "in the last 7 days", "month": "in the last 30 days"}
+
+
+def explain(row, now, posted_limit=None):
     """Plain-English reason for the outreach verdict, assembled from facts + Jev answers (TypeSafe cannot write text)."""
     n, kind = row["days_since_last_activity"], row["last_activity_type"]
     if n is None:
-        return "No public posts, comments or reactions were observed, so there is no sign this person uses LinkedIn."
+        window = f" {POSTED_LIMIT_TEXT.get(posted_limit, posted_limit)}" if posted_limit else ""
+        return (f"No public posts, comments or reactions were observed{window}, so there is no sign this person "
+                f"{'has used LinkedIn recently' if posted_limit else 'uses LinkedIn'}.")
     when = "today" if n < 1 else f"{n:.0f}d ago"
     last = (f"a reaction on a post from {when} (so the reaction is at most {math.ceil(n) or 1}d old)" if kind == "reaction"
             else f"a {kind} {when}")
@@ -364,7 +371,7 @@ def _analyze(row, u, grouped, runs, now, cfg, ts, questions):
     if not evidence:  # nothing to judge
         row |= {"activity_status": "no_activity_observed", "activity_level": "none",
                 "activity_confidence": "low", "linkedin_outreach_ready": False}
-        return row | {"outreach_reason": explain(row, now)}
+        return row | {"outreach_reason": explain(row, now, cfg["fetch"].get("posted_limit"))}
     try:
         row |= judge(ts, questions, facts, evidence, cfg, sources_unavailable=sorted(failed))
     except Exception as e:
@@ -372,7 +379,7 @@ def _analyze(row, u, grouped, runs, now, cfg, ts, questions):
                       "error": "; ".join(filter(None, [row["error"], f"typesafe: {type(e).__name__}: {e}"]))}
     if facts["most_recent_exact_activity_at"] is None and row["activity_confidence"] == "high":
         row["activity_confidence"] = "medium"  # reaction-only evidence has no exact dates: documented ceiling
-    return row | {"outreach_reason": explain(row, now)}
+    return row | {"outreach_reason": explain(row, now, cfg["fetch"].get("posted_limit"))}
 
 
 def main():
