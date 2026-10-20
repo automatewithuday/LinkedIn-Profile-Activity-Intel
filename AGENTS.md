@@ -24,7 +24,7 @@ Options: `--limit N`, `--config path`, `--out dir`.
   return (and bill) items from the last 30 days, so dormant profiles cost ~$0.001; `stale`/`inactive` then never occur. The 7/30/90-day windows are fixed in code (`WINDOWS`):
   output field names and question text depend on them.
 - Run `--dry-run` and tell the user BOTH numbers before any paid run: the estimate (expected charge) and the hard cap
-  (sum of per-run `max_total_charge_usd` = estimate + 25% + $0.05 per actor run; $0.20 for a single profile).
+  (sum of per-run `max_total_charge_usd` = estimate + 25% + $0.05 per actor run; $0.18 for a single profile).
   Do not remove the cap or loop around a spend/billing error.
 - Secrets live in `.env` only. Never print, echo, commit, or paste them.
 - Python via `uv` only. Quote paths (they may contain spaces).

@@ -11,7 +11,7 @@ Give it a list of LinkedIn profile URLs. For each one it tells you:
 - **How active are they?** — status (`active`, or `no_activity_observed` when nothing public in the last 30 days), level and confidence
 - **The evidence** — dates, counts and links to their most recent post and comment
 
-No LinkedIn login or cookies. You bring two API keys ([Apify](https://apify.com) and [TypeSafe](https://typesafe.ai)) and pay only their usage: about **$0.04 per profile**.
+No LinkedIn login or cookies. You bring two API keys ([Apify](https://apify.com) and [TypeSafe](https://typesafe.ai)) and pay only their usage: **at most $0.03 per profile**, and about a tenth of a cent for anyone with nothing public in the last 30 days.
 
 Example output for one profile (a person who likes and comments but rarely posts):
 
@@ -232,9 +232,9 @@ That is the maximum. `fetch.posted_limit = "month"` (the default) asks the actor
 profile with nothing recent returns nothing and costs about $0.001 (the posts actor's no-result fee). A list that is mostly
 dormant lands well under the maximum: the people you were going to skip are the ones you barely pay for. The price is that
 `stale` and `inactive` can no longer be told apart (both become `no_activity_observed`); set `posted_limit = ""` to fetch
-everything and get them back at full price. `--dry-run` prints two numbers: the **estimate** (what the caps above add up to) and the **hard cap** (the most Apify is authorised to charge: each actor run gets estimate + 25% + $0.05 headroom, so for one profile that is $0.20 even though the estimate is $0.04). The cap exists so a surprise can't run away; the estimate is what you should expect to pay.
+everything and get them back at full price. `--dry-run` prints two numbers: the **estimate** (what the caps above add up to) and the **hard cap** (the most Apify is authorised to charge: each actor run gets estimate + 25% + $0.05 headroom, so for one profile that is $0.18 even though the estimate is $0.03). The cap exists so a surprise can't run away; the estimate is what you should expect to pay.
 
-For comparison, LinkedPulse's equivalent check costs $0.03 per profile; this tool costs slightly more but gives you the evidence, the reason, and full control over the rules.
+For comparison, LinkedPulse's equivalent check costs $0.03 per profile flat; this tool costs the same at most, less for quiet profiles, and gives you the evidence, the reason, and full control over the rules.
 
 ---
 
